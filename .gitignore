@@ -1,0 +1,6 @@
+.venv/
+models/
+fonts/
+.cache/
+__pycache__/
+safari/

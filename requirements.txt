@@ -1,0 +1,10 @@
+numpy<2.3
+opencv-python-headless>=4.8
+pillow>=10.1
+onnxruntime>=1.17
+requests
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart
+manga-ocr>=0.1.14
+easyocr>=1.7
