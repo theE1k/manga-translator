@@ -13,6 +13,7 @@ import io
 import json
 import os
 import threading
+from contextlib import contextmanager
 import time
 from collections import OrderedDict
 
@@ -32,7 +33,36 @@ app = FastAPI(title="manga-translator")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 pipe = Pipeline()
-cpu = threading.Lock()  # local models (detect / OCR / inpaint / letter) one at a time; the API call runs outside
+class PriorityLock:
+    """One user of the local models at a time; waiting on-screen slices (prio 1) go before prefetch (0).
+    Time spent waiting is added to t["wait"] so the log separates queueing from work."""
+
+    def __init__(self):
+        self._cv = threading.Condition()
+        self._busy = False
+        self._waiting = [0, 0]
+
+    @contextmanager
+    def hold(self, prio: int = 0, t: dict | None = None):
+        prio = 1 if prio else 0
+        t0 = time.time()
+        with self._cv:
+            self._waiting[prio] += 1
+            while self._busy or (prio == 0 and self._waiting[1] > 0):
+                self._cv.wait()
+            self._waiting[prio] -= 1
+            self._busy = True
+        if t is not None:
+            t["wait"] = t.get("wait", 0) + time.time() - t0
+        try:
+            yield
+        finally:
+            with self._cv:
+                self._busy = False
+                self._cv.notify_all()
+
+
+cpu = PriorityLock()  # local models (detect / OCR / inpaint / letter); the API call runs outside it
 TOKEN = os.environ.get("MT_TOKEN", "")
 config.CACHE.mkdir(parents=True, exist_ok=True)
 
@@ -104,7 +134,7 @@ def health(x_mt_token: str | None = Header(default=None)):
 def translate(image: UploadFile = File(...), src: str = Form("ja"), tgt: str = Form("zh"),
               ctx: str = Form(""), y: float = Form(-1),
               next1: UploadFile | None = File(None), next1_y: float = Form(-1),
-              next2: UploadFile | None = File(None),
+              next2: UploadFile | None = File(None), prio: int = Form(0),
               x_mt_token: str | None = Header(default=None)):
     """Translate one slice.
 
@@ -140,11 +170,14 @@ def translate(image: UploadFile = File(...), src: str = Form("ja"), tgt: str = F
     # the slice above may be lettering a bubble into our top edge: wait for it. Concurrent requests
     # can arrive out of order, so if our own text touches the top edge, give the slice above a moment
     # to show up before going it alone.
+    t = {}
     ev = _inflight.get(h)
     if ev is None:
-        with cpu:
+        with cpu.hold(prio, t):
+            t0 = time.time()
             carried, _ = chapters.get_carry(h)
             top_cut = carried is None and any(b.y1 <= EDGE for b in _read(rgb, src, f"{h}|{src}|"))
+            t["read"] = time.time() - t0
         deadline = time.time() + (3 if top_cut else 0)
         while ev is None and time.time() < deadline:
             time.sleep(0.1)
@@ -156,8 +189,8 @@ def translate(image: UploadFile = File(...), src: str = Form("ja"), tgt: str = F
         with _inflight_lock:
             _inflight[n1h] = mine_done
     try:
-        t0 = time.time()
-        with cpu:
+        with cpu.hold(prio, t):
+            t0 = time.time()
             base, handled = chapters.get_carry(h)
             if base is None or base.shape != rgb.shape:
                 base, handled = rgb, []
@@ -191,7 +224,7 @@ def translate(image: UploadFile = File(...), src: str = Form("ja"), tgt: str = F
             ahead += [b.text for b in n2_blocks if b.text]
             if y >= 0 and not chapters.translated(ctx, y):  # source lines -> context for slices in flight
                 chapters.record(ctx, y, [(b.text, "") for b in mine if b.text])
-        t = {"read": time.time() - t0}
+            t["read"] = t.get("read", 0) + time.time() - t0
         if not crossing or below_done:
             mine_done.set()  # nothing to hand down: the slice below need not wait
 
@@ -200,11 +233,11 @@ def translate(image: UploadFile = File(...), src: str = Form("ja"), tgt: str = F
         pipe.translator(mine, src, tgt, history or None, ahead or None)
         t["translate"] = time.time() - t0
 
-        t0 = time.time()
-        with cpu:
+        with cpu.hold(prio, t):
+            t0 = time.time()
             done = [b for b in mine if b.translation]
             out_page = render(pipe.inpainter(page, done + erase_only), done, tgt)
-        t["letter"] = time.time() - t0
+            t["letter"] = time.time() - t0
         out = out_page[:H]
         if crossing and not below_done and n1h:
             chapters.put_carry(n1h, out_page[H:], [(c.x1, c.y1 - H, c.x2, c.y2 - H) for c in crossing])
@@ -228,7 +261,7 @@ def translate(image: UploadFile = File(...), src: str = Form("ja"), tgt: str = F
     cached.write_bytes(buf.getvalue())
     meta.write_text(json.dumps({"lines": lines}, ensure_ascii=False))
     return Response(buf.getvalue(), media_type="image/jpeg",
-                    headers={"X-MT-Blocks": str(len(mine)), "X-MT-Time": f"{sum(t.values()):.1f}",
+                    headers={"X-MT-Blocks": str(len(mine)), "X-MT-Time": f"{sum(t.values()):.1f}", "X-MT-Wait": f"{t.get('wait', 0):.1f}",
                              "X-MT-Crossing": str(len(crossing)), "X-MT-History": str(len(history)),
                              "X-MT-Ahead": str(len(ahead))})
 
@@ -254,7 +287,37 @@ b.src=URL.createObjectURL(await r.blob());st.textContent=((Date.now()-t0)/1000).
 </script>"""
 
 
+def warmup():
+    """Load and exercise every local model before the first page arrives (first request would
+    otherwise pay ~10 s: detector compile, OCR, inpainting on the GPU, jieba, font, API metadata)."""
+    t0 = time.time()
+    with cpu.hold(1):
+        blank = np.full((1200, 690, 3), 255, np.uint8)
+        pipe.detector.detect(blank)
+        # a line of real text, so the OCR recogniser (not just its line finder) is loaded too
+        from PIL import ImageDraw, ImageFont
+        sample = Image.new("RGB", (690, 200), "white")
+        ImageDraw.Draw(sample).text((40, 70), "오늘은 정말 긴 하루였어", fill="black",
+                                    font=ImageFont.truetype(str(config.FONT_PATH), 40))
+        sample = np.asarray(sample)
+        for lang in os.environ.get("MT_WARM_LANGS", "ko").split(","):
+            if lang and lang != "ja":
+                pipe.ocr.paddle(lang)(np.ascontiguousarray(sample[:, :, ::-1]))
+        pipe.inpainter.warmup()
+        import jieba
+        jieba.setLogLevel(60)
+        jieba.initialize()
+        render(blank[:200].copy(), [], "zh")
+        from mt.typeset import _font
+        _font(30)
+    from mt.translate import _supports
+    tr = pipe.translator
+    _supports(tr.url, tr.model, "reasoning")
+    print(f"warm-up done in {time.time() - t0:.1f}s")
+
+
 if __name__ == "__main__":
+    threading.Thread(target=warmup, daemon=True).start()
     port = int(os.environ.get("MT_PORT", 8765))
     print(f"manga-translator on http://0.0.0.0:{port}  (translation: {config.BACKEND} {config.MODEL})")
     uvicorn.run(app, host="0.0.0.0", port=port)

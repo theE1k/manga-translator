@@ -69,6 +69,7 @@ async function translate(msg) {
   const fd = new FormData();
   fd.append("image", blob, "page");
   if (msg.y != null) fd.append("y", String(msg.y));
+  if (msg.prio) fd.append("prio", "1");
   // next slices: look-ahead context + bubbles cut by the seam. Optional - failures are ignored.
   for (const [i, n] of (msg.next || []).entries()) {
     try {

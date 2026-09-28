@@ -25,6 +25,7 @@ os.environ.setdefault("EASYOCR_MODULE_PATH", str(CACHE / "easyocr"))
 
 DETECTOR_ONNX = MODELS / "comictextdetector.pt.onnx"
 LAMA_ONNX = MODELS / "lama_fp32.onnx"
+LAMA_TORCH = MODELS / "big-lama.pt"  # TorchScript big-lama: runs on the Apple GPU (MPS), ~4-17x faster
 
 # Font used for rendering. Any .otf/.ttf/.ttc works; drop a manga font in fonts/ and point here.
 FONT_PATH = Path(os.environ.get("MT_FONT", FONTS / "NotoSansCJKsc-Bold.otf"))

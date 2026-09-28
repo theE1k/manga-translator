@@ -84,6 +84,11 @@
     return best && Math.abs(bestTop + best.getBoundingClientRect().height - top) < 4 ? best : null;
   }
 
+  function onScreen(img) {
+    const r = img.getBoundingClientRect();
+    return r.bottom > 0 && r.top < innerHeight;
+  }
+
   function nearViewport(img, margin = 1.5) {
     const r = img.getBoundingClientRect(), vh = innerHeight;
     return r.bottom > -vh * 0.2 && r.top < vh * (1 + margin);
@@ -135,6 +140,7 @@
       const res = await api.runtime.sendMessage({
         type: "translate", ...payload, src: cfg.src, tgt: cfg.tgt,
         ctx: location.origin + location.pathname + location.search, y: layoutTop(img), next,
+        prio: onScreen(img) ? 1 : 0,  // the slice being read goes before prefetched ones
       });
       if (!res || res.error) throw new Error(res ? res.error : "no response from background");
       st.translated = res.dataUrl;

@@ -11,7 +11,7 @@
   const first = +(new URLSearchParams(location.search).get("from") || 40), n = +(new URLSearchParams(location.search).get("n") || 20);
   for (let i = first; i < first + n; i++) {
     const img = document.createElement("img");
-    img.src = `/out/real/ep1/${String(i).padStart(3, "0")}.jpg`;
+    img.src = `/out/real/${new URLSearchParams(location.search).get("dir") || "ep1"}/${String(i).padStart(3, "0")}.jpg`;
     img.dataset.slice = i;
     r.appendChild(img);
   }
