@@ -42,18 +42,17 @@ def fetch(name, url, dst: Path):
 
 
 def warm_ocr(langs):
-    """manga-ocr and EasyOCR download their own weights on first use; do it now."""
+    """manga-ocr and PaddleOCR download their own weights on first use; do it now."""
     if "ja" in langs:
         print("↓ manga-ocr (Japanese OCR, ~450 MB)")
         from manga_ocr import MangaOcr
         MangaOcr()
-    easy = [l for l in langs if l != "ja"]
-    if easy:
-        import easyocr
-        m = {"ko": ["ko", "en"], "zh": ["ch_sim", "en"], "en": ["en"]}
-        for l in easy:
-            print(f"↓ EasyOCR {l}")
-            easyocr.Reader(m[l], gpu=False, verbose=False)
+    from mt.ocr import OCR
+    ocr = OCR()
+    for l in langs:
+        if l != "ja":
+            print(f"↓ PaddleOCR PP-OCRv5 ({l})")
+            ocr.paddle(l)
 
 
 if __name__ == "__main__":

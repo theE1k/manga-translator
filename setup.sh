@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # One-time setup on macOS (Apple Silicon). Usage:
 #   ./setup.sh            # Japanese source only
-#   ./setup.sh ja,ko,zh   # also Korean + Chinese OCR (installs EasyOCR)
+#   ./setup.sh ja,ko,zh   # PaddleOCR models for ko/zh/en download on first use
 set -euo pipefail
 cd "$(dirname "$0")"
 LANGS="${1:-ja}"
 MODEL="${MT_OLLAMA_MODEL:-qwen3:4b-instruct}"
 
 need_mb=2500                                   # Python packages ~1.5 GB + models ~0.8 GB
-[[ "$LANGS" != "ja" ]] && need_mb=$((need_mb + 500))
 have_model=0
 if command -v ollama >/dev/null 2>&1 && ollama list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$MODEL"; then
   have_model=1
@@ -36,7 +35,6 @@ else
 fi
 source .venv/bin/activate
 $PIP -r requirements.txt
-[[ "$LANGS" != "ja" ]] && $PIP "easyocr>=1.7"
 
 python download_models.py "$LANGS"
 
