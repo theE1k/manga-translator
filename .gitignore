@@ -5,3 +5,4 @@ fonts/
 __pycache__/
 safari/
 out/
+.DS_Store

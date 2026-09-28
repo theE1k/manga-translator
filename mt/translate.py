@@ -27,7 +27,22 @@ SYSTEM = (
     "localisation would read: keep character voice, exclamations and sound effects, "
     "keep it short enough to fit the bubble, never add explanations or notes. "
     "Lines are in reading order and belong to the same page, so use them as context."
+    "{extra}"
 )
+
+# Source-specific guidance: small models otherwise soften slang, read internet shorthand literally,
+# or translate idioms word by word.
+SRC_NOTES = {
+    "ko": (
+        " The source is a Korean webtoon. Keep the register: swearing stays swearing at the same "
+        "strength (씨발/ㅆ발 -> 操/妈的, 새끼/ㅅ끼 -> 小子/崽子/混蛋, ㅂ신/병신 -> 傻逼/废物, 개- as an intensifier -> 超/真他妈), "
+        "school slang stays slang (왕따/전따 -> 被孤立的/全校公敌, 찐따 -> 废物/窝囊废, 일진 -> 不良/混混头子, "
+        "노답 -> 没救了, ㅈ되다 -> 完蛋). ㅋㅋ -> 哈哈. 선배 -> 学长/学姐, 샘/선생님 -> 老师. "
+        "Translate the meaning of idioms, not the words (e.g. 멱따는 소리 = shrieking like a pig being slaughtered, "
+        "~할 줄 알다 = to know how to ~). OCR may contain small typos; infer the intended word from context. "
+        "Keep Korean names as consistent Chinese transliterations."
+    ),
+}
 
 
 def _is_sakura(model: str) -> bool:
@@ -54,13 +69,16 @@ class Translator:
         # HY-MT ships its own sampling defaults in the Modelfile; don't override them
         opts = {"num_ctx": 4096} if _is_hymt(self.model) else {"temperature": 0.2, "num_ctx": 4096}
         body = {"model": self.model, "stream": False, "options": opts, "messages": msgs}
+        if self.model.startswith("qwen3") and "instruct" not in self.model:
+            body["think"] = False  # hybrid Qwen3: skip the reasoning trace, it only adds latency here
         if json_mode:
             body["format"] = "json"
         r = self.http.post(f"{self.url}/api/chat", json=body, timeout=self.timeout)
         r.raise_for_status()
         return r.json()["message"]["content"]
 
-    def translate_lines(self, lines: list[str], src: str, tgt: str) -> list[str]:
+    def translate_lines(self, lines: list[str], src: str, tgt: str,
+                        history: list[tuple[str, str]] | None = None) -> list[str]:
         if not lines:
             return []
         tgt_name = config.LANG_NAMES.get(tgt, tgt)
@@ -77,11 +95,15 @@ class Translator:
                 return res
         else:
             payload = {str(i + 1): t for i, t in enumerate(lines)}
-            user = (f"Translate each {src_name} value into {tgt_name}. Reply with a JSON object "
+            ctx = ""
+            if history:
+                ctx = ("Earlier lines of this chapter, already translated (context only, do not output them):\n"
+                       + "\n".join(f"{a} => {b}" for a, b in history) + "\n\n")
+            user = (ctx + f"Translate each {src_name} value into {tgt_name}. Reply with a JSON object "
                     f"with exactly the same keys and only the translations as values.\n"
                     + json.dumps(payload, ensure_ascii=False))
             try:
-                out = self._chat(SYSTEM.format(tgt=tgt_name), user, True)
+                out = self._chat(self._system(src, tgt), user, True)
                 data = json.loads(out)
                 if isinstance(data, dict) and "translations" in data and isinstance(data["translations"], dict):
                     data = data["translations"]
@@ -94,10 +116,13 @@ class Translator:
         # fallback: one line at a time
         res = []
         for t in lines:
-            out = self._chat(SYSTEM.format(tgt=tgt_name),
+            out = self._chat(self._system(src, tgt),
                              f"Translate into {tgt_name}. Output only the translation.\n{t}", False)
             res.append(_clean(out))
         return res
+
+    def _system(self, src: str, tgt: str) -> str:
+        return SYSTEM.format(tgt=config.LANG_NAMES.get(tgt, tgt), extra=SRC_NOTES.get(src, ""))
 
     def _hymt(self, lines: list[str], src: str, tgt: str, ctx_lines: int = 3) -> list[str]:
         """One bubble per call with the previous bubbles as context (HY-MT's contextual-translation prompt)."""
@@ -114,9 +139,10 @@ class Translator:
             out.append(_clean(self._chat("", prompt, False)))
         return out
 
-    def __call__(self, blocks: list[TextBlock], src: str, tgt: str) -> None:
+    def __call__(self, blocks: list[TextBlock], src: str, tgt: str,
+                 history: list[tuple[str, str]] | None = None) -> None:
         todo = [b for b in blocks if b.text]
-        for b, t in zip(todo, self.translate_lines([b.text for b in todo], src, tgt)):
+        for b, t in zip(todo, self.translate_lines([b.text for b in todo], src, tgt, history)):
             b.translation = _clean(t)
 
 

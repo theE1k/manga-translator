@@ -50,7 +50,9 @@ class Pipeline:
             self._inp = Inpainter()
         return self._inp
 
-    def run(self, rgb: np.ndarray, src: str = "ja", tgt: str = "zh", verbose=True):
+    def run(self, rgb: np.ndarray, src: str = "ja", tgt: str = "zh", verbose=True,
+            history: list[tuple[str, str]] | None = None):
+        """history: earlier (source, translation) pairs of the same chapter, used as translation context."""
         t = {}
         t0 = time.time()
         blocks, _ = self.detector.detect(rgb)
@@ -68,7 +70,7 @@ class Pipeline:
         t["ocr"] = time.time() - t0
 
         t0 = time.time()
-        self.translator(blocks, src, tgt)
+        self.translator(blocks, src, tgt, history)
         t["translate"] = time.time() - t0
 
         done = [b for b in blocks if b.translation]

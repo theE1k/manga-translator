@@ -51,6 +51,7 @@ async function translate(msg) {
   fd.append("image", blob, "page");
   fd.append("src", msg.src || cfg.src);
   fd.append("tgt", msg.tgt || cfg.tgt);
+  if (msg.ctx) fd.append("ctx", msg.ctx);  // chapter URL -> server keeps earlier lines as context
   const headers = cfg.token ? { "X-MT-Token": cfg.token } : {};
   const r = await fetch(cfg.server.replace(/\/$/, "") + "/translate", { method: "POST", body: fd, headers });
   if (!r.ok) throw new Error(`server ${r.status}: ${(await r.text()).slice(0, 120)}`);

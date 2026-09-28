@@ -11,6 +11,7 @@ import hashlib
 import io
 import os
 import threading
+from collections import OrderedDict
 
 import numpy as np
 import uvicorn
@@ -29,6 +30,20 @@ lock = threading.Lock()  # models are not thread-safe; pages are processed one a
 TOKEN = os.environ.get("MT_TOKEN", "")
 config.CACHE.mkdir(parents=True, exist_ok=True)
 
+# Per-chapter translation memory: the extension sends the reading page URL as `ctx`, so each new
+# slice is translated knowing the dialogue before it (names, tone, running jokes stay consistent).
+HISTORY: OrderedDict[str, list[tuple[str, str]]] = OrderedDict()
+HISTORY_LINES, HISTORY_CHAPTERS = 20, 50
+
+
+def _history(ctx: str) -> list[tuple[str, str]]:
+    if not ctx:
+        return []
+    HISTORY.move_to_end(ctx) if ctx in HISTORY else HISTORY.setdefault(ctx, [])
+    while len(HISTORY) > HISTORY_CHAPTERS:
+        HISTORY.popitem(last=False)
+    return HISTORY[ctx]
+
 
 def _check(token: str | None):
     if TOKEN and token != TOKEN:
@@ -43,7 +58,7 @@ def health(x_mt_token: str | None = Header(default=None)):
 
 @app.post("/translate")
 def translate(image: UploadFile = File(...), src: str = Form("ja"), tgt: str = Form("zh"),
-              x_mt_token: str | None = Header(default=None)):
+              ctx: str = Form(""), x_mt_token: str | None = Header(default=None)):
     _check(x_mt_token)
     data = image.file.read()
     if not data:
@@ -62,7 +77,10 @@ def translate(image: UploadFile = File(...), src: str = Form("ja"), tgt: str = F
         raise HTTPException(400, "image too small")
 
     with lock:
-        out, blocks, t = pipe.run(rgb, src, tgt)
+        hist = _history(ctx)
+        out, blocks, t = pipe.run(rgb, src, tgt, history=hist[-HISTORY_LINES:] or None)
+        hist.extend((b.text, b.translation) for b in blocks if b.text and b.translation)
+        del hist[:-HISTORY_LINES]
     buf = io.BytesIO()
     if has_alpha:
         Image.fromarray(out).save(buf, "PNG")

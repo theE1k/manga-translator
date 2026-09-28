@@ -94,7 +94,7 @@
     img.classList.add("mt-working");
     try {
       const payload = await imageData(img);
-      const res = await api.runtime.sendMessage({ type: "translate", ...payload, src: cfg.src, tgt: cfg.tgt });
+      const res = await api.runtime.sendMessage({ type: "translate", ...payload, src: cfg.src, tgt: cfg.tgt, ctx: location.origin + location.pathname + location.search });
       if (!res || res.error) throw new Error(res ? res.error : "no response from background");
       st.translated = res.dataUrl;
       st.status = "done";
