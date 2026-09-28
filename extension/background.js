@@ -40,9 +40,27 @@ async function setReferer(pageUrl) {
 async function toBlob(m) {
   if (m.dataUrl) return b64ToBlob(m.dataUrl);
   await setReferer(m.referer);
-  const r = await fetch(m.url, { credentials: "include" });
-  if (!r.ok) throw new Error(`image fetch ${r.status}`);
+  const host = (() => { try { return new URL(m.url).host; } catch (_) { return m.url; } })();
+  let r;
+  try {
+    r = await fetch(m.url, { credentials: "include" });
+  } catch (e) {
+    throw new Error(`读取原图失败（${host}，网络错误）: ${e.message}`);
+  }
+  if (!r.ok) throw new Error(`读取原图失败（${host}，HTTP ${r.status}）`);
   return r.blob();
+}
+
+// The server may be restarting for a few seconds: retry connection errors before giving up.
+async function postWithRetry(url, init, tries = 3) {
+  for (let i = 1; ; i++) {
+    try {
+      return await fetch(url, init);
+    } catch (e) {
+      if (i >= tries) throw new Error(`连不上翻译服务 ${url.replace(/\/translate$/, "")}（服务没开？在项目目录运行 ./run.sh）`);
+      await new Promise((res) => setTimeout(res, 2000));
+    }
+  }
 }
 
 async function translate(msg) {
@@ -62,8 +80,8 @@ async function translate(msg) {
   fd.append("tgt", msg.tgt || cfg.tgt);
   if (msg.ctx) fd.append("ctx", msg.ctx);  // chapter URL -> server keeps earlier lines as context
   const headers = cfg.token ? { "X-MT-Token": cfg.token } : {};
-  const r = await fetch(cfg.server.replace(/\/$/, "") + "/translate", { method: "POST", body: fd, headers });
-  if (!r.ok) throw new Error(`server ${r.status}: ${(await r.text()).slice(0, 120)}`);
+  const r = await postWithRetry(cfg.server.replace(/\/$/, "") + "/translate", { method: "POST", body: fd, headers });
+  if (!r.ok) throw new Error(`翻译服务出错 ${r.status}: ${(await r.text()).slice(0, 120)}`);
   return { dataUrl: await blobToDataUrl(await r.blob()) };
 }
 
