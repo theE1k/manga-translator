@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 
 import requests
 
@@ -86,7 +87,9 @@ class Translator:
         return r.json()["message"]["content"]
 
     def _chat_api(self, msgs, json_mode: bool) -> str:
-        body = {"model": self.model, "messages": msgs, "temperature": 0.3}
+        # Explicit output cap: some providers otherwise reserve their whole context window for the
+        # reply and then reject the request as "exceeds maximum context length" (HTTP 400).
+        body = {"model": self.model, "messages": msgs, "temperature": 0.3, "max_tokens": 1024}
         if json_mode:
             body["response_format"] = {"type": "json_object"}
         if "openrouter.ai" in self.url:
@@ -96,8 +99,12 @@ class Translator:
             if not self.model.endswith(":free"):
                 prov["data_collection"] = "deny"
             body["provider"] = prov
-        r = self.http.post(f"{self.url}/chat/completions", json=body, timeout=self.timeout,
-                           headers={"Authorization": f"Bearer {config.API_KEY}", "X-Title": "manga-translator"})
+        for wait in (2, 5, 15, None):  # rate limits (429) and flaky upstreams (5xx) are common on cheap/free routes
+            r = self.http.post(f"{self.url}/chat/completions", json=body, timeout=self.timeout,
+                               headers={"Authorization": f"Bearer {config.API_KEY}", "X-Title": "manga-translator"})
+            if r.status_code not in (429, 500, 502, 503) or wait is None:
+                break
+            time.sleep(wait)
         if r.status_code >= 400:
             raise requests.HTTPError(f"{r.status_code}: {r.text[:300]}", response=r)
         choice = r.json()["choices"][0]
@@ -144,8 +151,12 @@ class Translator:
         # fallback: one line at a time
         res = []
         for t in lines:
-            out = self._chat(self._system(src, tgt),
-                             f"Translate into {tgt_name}. Output only the translation.\n{t}", False)
+            try:
+                out = self._chat(self._system(src, tgt),
+                                 f"Translate into {tgt_name}. Output only the translation.\n{t}", False)
+            except requests.RequestException as e:  # one bad line must not sink the whole page
+                print(f"  translate failed ({e}); leaving original: {t!r}")
+                out = ""
             res.append(_clean(out))
         return res
 
