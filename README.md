@@ -6,8 +6,8 @@
 | 步骤 | 模型 | 说明 |
 |---|---|---|
 | 文字检测 | comic-text-detector (ONNX) | 输出文字框 + 像素级文字遮罩；条漫自动分块 |
-| OCR | manga-ocr（日文）/ EasyOCR（韩、中、英） | 整个气泡一起识别 |
-| 翻译 | Ollama + Qwen2.5-3B（可换 7B、SakuraLLM） | 整页一起翻，保持上下文 |
+| OCR | manga-ocr（日文）/ PaddleOCR PP-OCRv5（韩、中、英） | 韩文整页识别后按气泡归并 |
+| 翻译 | Ollama + Qwen3-4B-Instruct（可换 Qwen2.5-7B、SakuraLLM） | 整页一起翻，保持上下文 |
 | 擦字 | 纯色气泡直接填色；画面上的字用 LaMa (ONNX) | 气泡里能做到像素级干净 |
 | 嵌字 | Pillow | 保留竖排、匹配原字号/颜色/描边，按气泡形状排版，避头尾 |
 
@@ -18,7 +18,7 @@ cd ~/work/manga-translator
 chmod +x setup.sh run.sh
 ./setup.sh            # 只装日文；要韩/中/英：./setup.sh ja,ko,zh,en
 ```
-需要约 4GB 磁盘空间。
+需要约 4GB 磁盘空间（建议整个项目放在外接盘）。
 
 ## 2. 启动
 
@@ -51,7 +51,7 @@ iPhone 上的扩展设置里，服务器地址填 `./run.sh` 打印出来的 `ht
 
 | 环境变量 | 作用 |
 |---|---|
-| `MT_OLLAMA_MODEL=qwen2.5:7b` | 更好的翻译（约 4.7GB） |
+| `MT_OLLAMA_MODEL=qwen2.5:7b` | 俚语稍自然一些，但慢约 40%、多占约 2GB 内存 |
 | `MT_FONT=fonts/你的漫画字体.otf` | 换嵌字字体，对「看不出替换」影响最大 |
 | `MT_DET_CONF=0.3` | 漏检时调低 |
 

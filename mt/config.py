@@ -19,7 +19,7 @@ FONT_INDEX = int(os.environ.get("MT_FONT_INDEX", 0))  # face index inside a .ttc
 
 # Translation through a local Ollama server.
 OLLAMA_URL = os.environ.get("MT_OLLAMA_URL", "http://127.0.0.1:11434")
-OLLAMA_MODEL = os.environ.get("MT_OLLAMA_MODEL", "qwen2.5:7b")
+OLLAMA_MODEL = os.environ.get("MT_OLLAMA_MODEL", "qwen3:4b-instruct")
 
 DET_SIZE = 1024
 DET_CONF = float(os.environ.get("MT_DET_CONF", 0.4))

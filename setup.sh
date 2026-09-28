@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 LANGS="${1:-ja}"
-MODEL="${MT_OLLAMA_MODEL:-qwen2.5:7b}"
+MODEL="${MT_OLLAMA_MODEL:-qwen3:4b-instruct}"
 
 need_mb=2500                                   # Python packages ~1.5 GB + models ~0.8 GB
 [[ "$LANGS" != "ja" ]] && need_mb=$((need_mb + 500))
@@ -13,7 +13,7 @@ have_model=0
 if command -v ollama >/dev/null 2>&1 && ollama list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$MODEL"; then
   have_model=1
 else
-  need_mb=$((need_mb + 4700))
+  need_mb=$((need_mb + 2500))
 fi
 avail_mb=$(df -m . | awk 'NR==2{print $4}')
 echo "Free disk: ${avail_mb} MB, needs ~${need_mb} MB"

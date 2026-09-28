@@ -4,9 +4,12 @@ Whole page is sent at once (numbered, in reading order) so the model sees the
 conversation and keeps names / tone consistent.
 
 Suggested models:
-  qwen2.5:7b          default, ~4.7 GB, all language pairs
-  qwen2.5:3b          smaller/faster, ~2 GB
+  qwen3:4b-instruct   default, ~2.5 GB; on ko->zh webtoon lines as good as qwen2.5:7b, 40% faster
+  qwen2.5:7b          ~4.7 GB, slightly more natural slang, needs ~4.5 GB RAM
+  (qwen2.5:3b / 1.5b and hymt:1.8b were tested and mistranslate colloquial lines; see tests/bench_translate.py)
   sakura (SakuraLLM)  Japanese -> Chinese specialist (import GGUF into Ollama)
+  hymt:1.8b           Tencent HY-MT1.5-1.8B, dedicated 33-language translation model, ~1.1 GB
+                      (import with: ollama create hymt:1.8b -f Modelfile.hy-mt)
 """
 from __future__ import annotations
 
@@ -31,6 +34,15 @@ def _is_sakura(model: str) -> bool:
     return "sakura" in model.lower()
 
 
+def _is_hymt(model: str) -> bool:
+    m = model.lower()
+    return "hymt" in m or "hy-mt" in m
+
+
+# HY-MT's own target-language names; its official prompts (see model card) differ for Chinese pairs.
+_HYMT_NAMES = {"zh": "中文", "zh-TW": "繁体中文", "en": "英语", "ja": "日语", "ko": "韩语"}
+
+
 class Translator:
     def __init__(self, model=config.OLLAMA_MODEL, url=config.OLLAMA_URL, timeout=180):
         self.model, self.url, self.timeout = model, url.rstrip("/"), timeout
@@ -38,12 +50,10 @@ class Translator:
         self.http.trust_env = False  # never send localhost traffic through a system proxy (Clash etc.)
 
     def _chat(self, system: str, user: str, json_mode: bool) -> str:
-        body = {
-            "model": self.model,
-            "stream": False,
-            "options": {"temperature": 0.2, "num_ctx": 4096},
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        }
+        msgs = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": user}]
+        # HY-MT ships its own sampling defaults in the Modelfile; don't override them
+        opts = {"num_ctx": 4096} if _is_hymt(self.model) else {"temperature": 0.2, "num_ctx": 4096}
+        body = {"model": self.model, "stream": False, "options": opts, "messages": msgs}
         if json_mode:
             body["format"] = "json"
         r = self.http.post(f"{self.url}/api/chat", json=body, timeout=self.timeout)
@@ -55,6 +65,9 @@ class Translator:
             return []
         tgt_name = config.LANG_NAMES.get(tgt, tgt)
         src_name = config.LANG_NAMES.get(src, src)
+
+        if _is_hymt(self.model):
+            return self._hymt(lines, src, tgt)
 
         if _is_sakura(self.model):  # Sakura expects plain line-by-line ja->zh
             sys_p = "你是一个轻小说翻译模型，可以流畅通顺地以日本轻小说的风格将日文翻译成简体中文，并联系上下文正确使用人称代词，不擅自添加原文中没有的代词。"
@@ -85,6 +98,21 @@ class Translator:
                              f"Translate into {tgt_name}. Output only the translation.\n{t}", False)
             res.append(_clean(out))
         return res
+
+    def _hymt(self, lines: list[str], src: str, tgt: str, ctx_lines: int = 3) -> list[str]:
+        """One bubble per call with the previous bubbles as context (HY-MT's contextual-translation prompt)."""
+        name = _HYMT_NAMES.get(tgt, config.LANG_NAMES.get(tgt, tgt))
+        out = []
+        for i, t in enumerate(lines):
+            ctx = "\n".join(lines[max(0, i - ctx_lines):i])
+            if ctx:
+                prompt = f"{ctx}\n参考上面的信息，把下面的文本翻译成{name}，注意不需要翻译上文，也不要额外解释：\n{t}"
+            elif tgt.startswith("zh") or src.startswith("zh"):
+                prompt = f"将以下文本翻译为{name}，注意只需要输出翻译后的结果，不要额外解释：\n\n{t}"
+            else:
+                prompt = f"Translate the following segment into {config.LANG_NAMES.get(tgt, tgt)}, without additional explanation.\n\n{t}"
+            out.append(_clean(self._chat("", prompt, False)))
+        return out
 
     def __call__(self, blocks: list[TextBlock], src: str, tgt: str) -> None:
         todo = [b for b in blocks if b.text]
