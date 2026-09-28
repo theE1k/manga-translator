@@ -3,6 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 source .venv/bin/activate
+export PYTHONUNBUFFERED=1  # log lines appear immediately when redirected to a file
 if ! grep -qs "^MT_API_KEY=." .env && command -v ollama >/dev/null 2>&1 && ! curl -s http://127.0.0.1:11434/api/tags >/dev/null; then  # local model only when no API key
   (ollama serve >/dev/null 2>&1 &)
   sleep 2

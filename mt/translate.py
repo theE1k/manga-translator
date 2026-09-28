@@ -115,7 +115,8 @@ class Translator:
         if "openrouter.ai" in self.url:
             # Route around first-party hosts that moderate adult content, and (unless the model is a
             # free one, which requires it) around providers that keep or train on prompts.
-            prov = {"ignore": [p for p in os.environ.get("MT_API_IGNORE", "DeepSeek,Alibaba").split(",") if p]}
+            prov = {"ignore": [p for p in os.environ.get("MT_API_IGNORE", "DeepSeek,Alibaba").split(",") if p],
+                    "sort": "latency"}  # fastest-responding host first: the reader is waiting
             if not self.model.endswith(":free"):
                 prov["data_collection"] = "deny"
             body["provider"] = prov
@@ -154,7 +155,7 @@ class Translator:
             ctx = ""
             if history:
                 ctx = ("Earlier lines of this chapter, already translated (context only, do not output them):\n"
-                       + "\n".join(f"{a} => {b}" for a, b in history) + "\n\n")
+                       + "\n".join(f"{a} => {b}" if b else a for a, b in history) + "\n\n")
             if ahead:
                 ctx += ("Lines that come right after this page (context only, do not output them):\n"
                         + "\n".join(ahead) + "\n\n")

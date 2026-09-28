@@ -5,6 +5,7 @@
   const api = globalThis.browser ?? globalThis.chrome;
   const DEFAULTS = { src: "ko", tgt: "zh", auto: false, button: true, server: "http://127.0.0.1:8765", token: "" };
   const MIN_SIDE = 300;          // ignore icons, avatars, ads
+  const AHEAD = 10;              // translate this many screen heights below the viewport in advance
   let cfg = { ...DEFAULTS };
   let showOriginal = false;
   let following = false;         // set by the 译 button; survives settings reloads
@@ -148,25 +149,36 @@
     }
   }
 
-  async function pump() {
-    if (busy) return;
-    busy = true; setStatus();
-    while (queue.length) {
-      // reading order from the viewport down (a slice before the one below it, so a bubble cut by the
-      // seam can be lettered across both); slices already scrolled past go last
-      const vy = scrollY;
-      const key = (i) => { const r = i.getBoundingClientRect(); return (r.bottom < 0 ? 1e9 : 0) + r.top + vy; };
-      queue.sort((a, b) => key(a) - key(b));
-      let img = queue[0];
-      // if the slice directly above is still waiting and not far behind, do it first: a bubble cut by
-      // their seam can only be lettered across both slices when the upper one goes first
-      for (let up = upperNeighbour(img); up && queue.includes(up) && up.getBoundingClientRect().bottom > -innerHeight;
-           up = upperNeighbour(up)) img = up;
-      queue.splice(queue.indexOf(img), 1);
-      await process(img);
-      done++; setStatus();
+  // Up to MAX_INFLIGHT slices at once: the server overlaps their API calls while its local models
+  // take turns, so a slow API reply no longer holds up the pages behind it.
+  const MAX_INFLIGHT = 3;
+  let inflight = 0;
+
+  function pick() {
+    // reading order from the viewport down (a slice before the one below it, so a bubble cut by the
+    // seam can be lettered across both); slices already scrolled past go last
+    const vy = scrollY;
+    const key = (i) => { const r = i.getBoundingClientRect(); return (r.bottom < 0 ? 1e9 : 0) + r.top + vy; };
+    queue.sort((a, b) => key(a) - key(b));
+    let img = queue[0];
+    // if the slice directly above is still waiting and not far behind, do it first
+    for (let up = upperNeighbour(img); up && queue.includes(up) && up.getBoundingClientRect().bottom > -innerHeight;
+         up = upperNeighbour(up)) img = up;
+    queue.splice(queue.indexOf(img), 1);
+    return img;
+  }
+
+  function pump() {
+    while (inflight < MAX_INFLIGHT && queue.length) {
+      const img = pick();
+      inflight++;
+      busy = true; setStatus();
+      process(img).finally(() => {
+        inflight--; done++;
+        busy = inflight > 0 || queue.length > 0; setStatus();
+        pump();
+      });
     }
-    busy = false; setStatus();
   }
 
   function enqueue(imgs) {
@@ -182,7 +194,7 @@
     showOriginal = false;
     const imgs = candidates();
     if (!imgs.length) return toast("这个页面没找到漫画图片");
-    enqueue(imgs.filter((i) => nearViewport(i, 3)));
+    enqueue(imgs.filter((i) => nearViewport(i, AHEAD)));
     following = true; // keep following as the reader scrolls / loads more pages
   }
 
@@ -200,7 +212,7 @@
   let scrollT = null;
   function autoScan() {
     if (!(cfg.auto || following) || showOriginal) return;
-    enqueue(candidates().filter((i) => nearViewport(i)));
+    enqueue(candidates().filter((i) => nearViewport(i, AHEAD)));
   }
   addEventListener("scroll", () => { clearTimeout(scrollT); scrollT = setTimeout(autoScan, 250); }, { passive: true });
   new MutationObserver(() => { clearTimeout(scrollT); scrollT = setTimeout(autoScan, 400); })

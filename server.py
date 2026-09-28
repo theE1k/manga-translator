@@ -7,6 +7,7 @@ Open http://localhost:8765 in a browser for a drag-and-drop test page.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import json
@@ -25,17 +26,21 @@ from PIL import Image
 from mt import Pipeline, config
 from mt.chapter import ChapterStore
 from mt.pipeline import log_blocks
+from mt.typeset import render
 
 app = FastAPI(title="manga-translator")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 pipe = Pipeline()
-lock = threading.Lock()  # models are not thread-safe; pages are processed one at a time
+cpu = threading.Lock()  # local models (detect / OCR / inpaint / letter) one at a time; the API call runs outside
 TOKEN = os.environ.get("MT_TOKEN", "")
 config.CACHE.mkdir(parents=True, exist_ok=True)
 
 chapters = ChapterStore()
-_read_cache: OrderedDict[str, list[str]] = OrderedDict()  # image sha1 -> OCR lines (look-ahead only)
+_reads: OrderedDict[str, list] = OrderedDict()  # image sha1 (+src) -> detected + OCR'd blocks
+_inflight: dict[str, threading.Event] = {}     # slice sha1 -> set once the slice above it is done with the seam
+_inflight_lock = threading.Lock()
+SEAM_BAND, EDGE = 700, 6
 
 
 def _decode(data: bytes | None):
@@ -47,17 +52,35 @@ def _decode(data: bytes | None):
         return None
 
 
-def _lines_of(data: bytes | None, src: str) -> list[str]:
-    """OCR text of a look-ahead slice (cached, never translated here)."""
-    rgb = _decode(data)
-    if rgb is None:
-        return []
-    h = hashlib.sha1(data).hexdigest()
-    if h not in _read_cache:
-        _read_cache[h] = [b.text for b in pipe.read(rgb, src) if b.text]
-        while len(_read_cache) > 64:
-            _read_cache.popitem(last=False)
-    return _read_cache[h]
+def _read(rgb, src: str, key: str) -> list:
+    """Detect + OCR one image once; neighbours reuse it as look-ahead and later as the current slice.
+    Call with the cpu lock held."""
+    if key in _reads:
+        _reads.move_to_end(key)
+        return _reads[key]
+    blocks = pipe.read(rgb, src)
+    _reads[key] = blocks
+    while len(_reads) > 24:
+        _reads.popitem(last=False)
+    return blocks
+
+
+def _embed(b, height: int, dy: int):
+    """Copy of a block moved down by dy into a page `height` px tall (coordinates and masks)."""
+    nb = copy.copy(b)
+    nb.y1, nb.y2 = b.y1 + dy, b.y2 + dy
+    if b.render_box:
+        x1, y1, x2, y2 = b.render_box
+        nb.render_box = (x1, y1 + dy, x2, y2 + dy)
+    if b.bubble is not None:
+        bx, by, hull = b.bubble
+        nb.bubble = (bx, by + dy, hull)
+    if b.mask is not None:
+        m = np.zeros((height, b.mask.shape[1]), bool)
+        h = min(b.mask.shape[0], height - dy)
+        m[dy:dy + h] = b.mask[:h]
+        nb.mask = m
+    return nb
 
 
 def _overlaps(b, box, frac=0.3) -> bool:
@@ -86,8 +109,9 @@ def translate(image: UploadFile = File(...), src: str = Form("ja"), tgt: str = F
     """Translate one slice.
 
     ctx/y: chapter (page URL) and the slice's vertical position -> earlier lines become context and
-    this slice's lines are remembered. next1/next2: the next two slices -> their text is given to the
-    model as look-ahead context, and a bubble cut by the seam to next1 is lettered across both slices.
+    this slice's lines are remembered. next1/next2: the next two slices -> their text is look-ahead
+    context, and a bubble cut by the seam to next1 is lettered across both slices.
+    Several requests run at once: local models take turns (cpu lock), API calls overlap.
     """
     _check(x_mt_token)
     data = image.file.read()
@@ -97,6 +121,7 @@ def translate(image: UploadFile = File(...), src: str = Form("ja"), tgt: str = F
     n2 = next2.file.read() if next2 else None
     h = hashlib.sha1(data).hexdigest()
     n1h = hashlib.sha1(n1).hexdigest() if n1 else ""
+    n2h = hashlib.sha1(n2).hexdigest() if n2 else ""
     key = hashlib.sha1(f"{h}|{n1h}|{src}|{tgt}|{config.MODEL}".encode()).hexdigest()
     cached, meta = config.CACHE / f"{key}.jpg", config.CACHE / f"{key}.json"
     if cached.exists():
@@ -112,45 +137,88 @@ def translate(image: UploadFile = File(...), src: str = Form("ja"), tgt: str = F
     if min(rgb.shape[:2]) < 64:
         raise HTTPException(400, "image too small")
 
-    with lock:
+    # the slice above may be lettering a bubble into our top edge: wait for it. Concurrent requests
+    # can arrive out of order, so if our own text touches the top edge, give the slice above a moment
+    # to show up before going it alone.
+    ev = _inflight.get(h)
+    if ev is None:
+        with cpu:
+            carried, _ = chapters.get_carry(h)
+            top_cut = carried is None and any(b.y1 <= EDGE for b in _read(rgb, src, f"{h}|{src}|"))
+        deadline = time.time() + (3 if top_cut else 0)
+        while ev is None and time.time() < deadline:
+            time.sleep(0.1)
+            ev = _inflight.get(h)
+    if ev is not None:
+        ev.wait(90)
+    mine_done = threading.Event()
+    if n1h:
+        with _inflight_lock:
+            _inflight[n1h] = mine_done
+    try:
         t0 = time.time()
-        # this slice may already carry the lower half of a bubble lettered together with the slice above
-        base, handled = chapters.get_carry(h)
-        if base is None or base.shape != rgb.shape:
-            base, handled = rgb, []
-        H = base.shape[0]
-        nxt = _decode(n1)
-        stitch = nxt is not None and nxt.shape[1] == base.shape[1]
-        # the slice below was already translated on its own (reader jumped ahead): a bubble cut by the
-        # seam is lettered there already, so here we only erase our half of it
-        below_done = stitch and next1_y >= 0 and chapters.translated(ctx, next1_y)
-        page = np.vstack([base, nxt]) if stitch else base
+        with cpu:
+            base, handled = chapters.get_carry(h)
+            if base is None or base.shape != rgb.shape:
+                base, handled = rgb, []
+            H, W = base.shape[:2]
+            own = _read(base, src, f"{h}|{src}|{'carry' if handled else ''}")
+            mine = [b for b in own if not any(_overlaps(b, box) for box in handled)]
+            nxt = _decode(n1)
+            n1_blocks = _read(nxt, src, f"{n1h}|{src}|") if nxt is not None else []
+            n2_rgb = _decode(n2)
+            n2_blocks = _read(n2_rgb, src, f"{n2h}|{src}|") if n2_rgb is not None else []
 
-        blocks = pipe.read(page, src)
-        mine = [b for b in blocks if b.y1 < H - 2 and not any(_overlaps(b, box) for box in handled)]
-        crossing = [b for b in mine if b.y2 > H + 2]
-        erase_only = crossing if below_done else []
-        if below_done:
-            mine = [b for b in mine if all(b is not c for c in crossing)]
-            crossing = []
-        ahead = [b.text for b in blocks if b.y1 >= H - 2 and b.text]
-        if not stitch:
-            ahead = _lines_of(n1, src)
-        ahead += _lines_of(n2, src)
-        history = chapters.history(ctx, y) if y >= 0 else []
+            # a bubble cut by the seam: only then read the band around the seam and work on both slices
+            page, crossing = base, []
+            if (nxt is not None and nxt.shape[1] == W
+                    and (any(b.y2 >= H - EDGE for b in mine) or any(b.y1 <= EDGE for b in n1_blocks))):
+                B = min(SEAM_BAND, H, nxt.shape[0])
+                band = pipe.read(np.vstack([base[H - B:], nxt[:B]]), src)
+                cut = [b for b in band if b.y1 < B - 2 and b.y2 > B + 2]
+                if cut:
+                    page = np.vstack([base, nxt])
+                    crossing = [_embed(b, page.shape[0], H - B) for b in cut]
+                    mine = [_embed(b, page.shape[0], 0) for b in mine
+                            if not any(_overlaps(b, c.box) for c in crossing)]
+            # the slice below was translated first (reader jumped ahead): it already carries the
+            # bubble's translation, so here we only erase our half
+            below_done = bool(crossing) and next1_y >= 0 and chapters.translated(ctx, next1_y)
+            erase_only = crossing if below_done else []
+            if not below_done:
+                mine += crossing
+            ahead = [b.text for b in n1_blocks if b.text and not (crossing and b.y1 <= EDGE)]
+            ahead += [b.text for b in n2_blocks if b.text]
+            if y >= 0 and not chapters.translated(ctx, y):  # source lines -> context for slices in flight
+                chapters.record(ctx, y, [(b.text, "") for b in mine if b.text])
         t = {"read": time.time() - t0}
+        if not crossing or below_done:
+            mine_done.set()  # nothing to hand down: the slice below need not wait
 
-        out_page, t2 = pipe.finish(page, mine, src, tgt, history or None, ahead or None, erase_only)
-        t.update(t2)
+        history = chapters.history(ctx, y) if y >= 0 else []
+        t0 = time.time()
+        pipe.translator(mine, src, tgt, history or None, ahead or None)
+        t["translate"] = time.time() - t0
+
+        t0 = time.time()
+        with cpu:
+            done = [b for b in mine if b.translation]
+            out_page = render(pipe.inpainter(page, done + erase_only), done, tgt)
+        t["letter"] = time.time() - t0
         out = out_page[:H]
-        if stitch and crossing and n1h:
-            chapters.put_carry(n1h, out_page[H:], [(b.x1, b.y1 - H, b.x2, b.y2 - H) for b in crossing])
+        if crossing and not below_done and n1h:
+            chapters.put_carry(n1h, out_page[H:], [(c.x1, c.y1 - H, c.x2, c.y2 - H) for c in crossing])
         lines = [(b.text, b.translation) for b in mine if b.text]
         if y >= 0:
             chapters.record(ctx, y, lines)
         log_blocks(mine, t)
         if crossing:
-            print(f"  {len(crossing)} bubble(s) cut by the seam lettered across both slices")
+            print(f"  {len(crossing)} bubble(s) cut by the seam" + (" (erased only)" if below_done else ""))
+    finally:
+        mine_done.set()
+        with _inflight_lock:
+            if _inflight.get(n1h) is mine_done:
+                del _inflight[n1h]
 
     buf = io.BytesIO()
     if has_alpha:
