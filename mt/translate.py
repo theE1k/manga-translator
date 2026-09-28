@@ -206,7 +206,10 @@ class Translator:
                  history: list[tuple[str, str]] | None = None, ahead: list[str] | None = None) -> None:
         todo = [b for b in blocks if b.text]
         for b, t in zip(todo, self.translate_lines([b.text for b in todo], src, tgt, history, ahead)):
-            b.translation = _clean(t)
+            t = _clean(t)
+            if tgt.startswith("zh") and src != "ja" and re.search(r"[\u3040-\u30ff]", t):
+                t = ""  # answered in Japanese (happens on logos / watermarks): leave the original
+            b.translation = t
 
 
 def _clean(s: str) -> str:

@@ -120,13 +120,19 @@ def translate(image: UploadFile = File(...), src: str = Form("ja"), tgt: str = F
             base, handled = rgb, []
         H = base.shape[0]
         nxt = _decode(n1)
-        stitch = (nxt is not None and nxt.shape[1] == base.shape[1]
-                  and not (next1_y >= 0 and chapters.translated(ctx, next1_y)))
+        stitch = nxt is not None and nxt.shape[1] == base.shape[1]
+        # the slice below was already translated on its own (reader jumped ahead): a bubble cut by the
+        # seam is lettered there already, so here we only erase our half of it
+        below_done = stitch and next1_y >= 0 and chapters.translated(ctx, next1_y)
         page = np.vstack([base, nxt]) if stitch else base
 
         blocks = pipe.read(page, src)
         mine = [b for b in blocks if b.y1 < H - 2 and not any(_overlaps(b, box) for box in handled)]
         crossing = [b for b in mine if b.y2 > H + 2]
+        erase_only = crossing if below_done else []
+        if below_done:
+            mine = [b for b in mine if all(b is not c for c in crossing)]
+            crossing = []
         ahead = [b.text for b in blocks if b.y1 >= H - 2 and b.text]
         if not stitch:
             ahead = _lines_of(n1, src)
@@ -134,7 +140,7 @@ def translate(image: UploadFile = File(...), src: str = Form("ja"), tgt: str = F
         history = chapters.history(ctx, y) if y >= 0 else []
         t = {"read": time.time() - t0}
 
-        out_page, t2 = pipe.finish(page, mine, src, tgt, history or None, ahead or None)
+        out_page, t2 = pipe.finish(page, mine, src, tgt, history or None, ahead or None, erase_only)
         t.update(t2)
         out = out_page[:H]
         if stitch and crossing and n1h:

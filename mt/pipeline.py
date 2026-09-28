@@ -61,7 +61,8 @@ class Pipeline:
         return blocks
 
     def finish(self, rgb: np.ndarray, blocks: list[TextBlock], src: str, tgt: str,
-               history: list[tuple[str, str]] | None = None, ahead: list[str] | None = None):
+               history: list[tuple[str, str]] | None = None, ahead: list[str] | None = None,
+               erase_only: list[TextBlock] | None = None):
         """translate -> erase -> re-letter. history: earlier (source, translation) pairs of the chapter;
         ahead: source lines that come right after this page (context only)."""
         t = {}
@@ -70,7 +71,7 @@ class Pipeline:
         t["translate"] = time.time() - t0
         done = [b for b in blocks if b.translation]
         t0 = time.time()
-        clean = self.inpainter(rgb, done)
+        clean = self.inpainter(rgb, done + list(erase_only or []))
         t["inpaint"] = time.time() - t0
         t0 = time.time()
         out = render(clean, done, tgt)

@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Extension harness</title>
+<!-- Loads the real extension scripts into a plain page with a minimal chrome.* shim, so the content
+     script's logic (next slices, layout position, queue order, payload) can be exercised in any browser.
+     Serve the project root:  python -m http.server 8790 --bind 127.0.0.1  -> /tests/harness.html -->
+<link rel="stylesheet" href="/extension/content.css">
+<style>body{margin:0;background:#111}.reader{width:690px;margin:0 auto}.reader img{display:block;width:690px}</style>
+<div class="reader" id="r"></div>
+<script>
+  const first = +(new URLSearchParams(location.search).get("from") || 40), n = +(new URLSearchParams(location.search).get("n") || 20);
+  for (let i = first; i < first + n; i++) {
+    const img = document.createElement("img");
+    img.src = `/out/real/ep1/${String(i).padStart(3, "0")}.jpg`;
+    img.dataset.slice = i;
+    r.appendChild(img);
+  }
+  window.__mtLog = [];
+  const listeners = [];
+  window.chrome = {
+    storage: { local: { get: async () => ({ src: "ko", tgt: "zh", server: "http://127.0.0.1:8765" }) },
+               onChanged: { addListener() {} } },
+    runtime: {
+      onMessage: { addListener: (f) => listeners.push(f) },
+      // content -> background: call the background listener (registered first) directly
+      sendMessage: (msg) => new Promise((res) => {
+        if (msg.type === "translate") {
+          const slice = [...document.images].find((i) => i.getBoundingClientRect && Math.abs(
+            (i.offsetTop) - msg.y) < 1)?.dataset.slice;
+          window.__mtLog.push({ slice, y: msg.y, next: (msg.next || []).map((x) => x.y), t: Date.now() });
+        }
+        listeners[0](msg, {}, res);
+      }),
+    },
+  };
+</script>
+<script src="/extension/background.js"></script>
+<script src="/extension/content.js"></script>

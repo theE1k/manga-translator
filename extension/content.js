@@ -7,6 +7,7 @@
   const MIN_SIDE = 300;          // ignore icons, avatars, ads
   let cfg = { ...DEFAULTS };
   let showOriginal = false;
+  let following = false;         // set by the 译 button; survives settings reloads
   const state = new WeakMap();   // img -> {status, orig, translated}
   const queue = [];
   let busy = false, done = 0, total = 0;
@@ -69,6 +70,17 @@
       .sort((a, b) => a[0] - b[0])
       .slice(0, n)
       .map(([t, i]) => ({ img: i, y: t }));
+  }
+
+  function upperNeighbour(img) {
+    const top = layoutTop(img);
+    let best = null, bestTop = -Infinity;
+    for (const i of candidates()) {
+      const t = layoutTop(i);
+      if (i !== img && t < top - 1 && t > bestTop) { best = i; bestTop = t; }
+    }
+    // only a slice that touches this one counts (a gap means no shared bubble)
+    return best && Math.abs(bestTop + best.getBoundingClientRect().height - top) < 4 ? best : null;
   }
 
   function nearViewport(img, margin = 1.5) {
@@ -145,7 +157,12 @@
       const vy = scrollY;
       const key = (i) => { const r = i.getBoundingClientRect(); return (r.bottom < 0 ? 1e9 : 0) + r.top + vy; };
       queue.sort((a, b) => key(a) - key(b));
-      const img = queue.shift();
+      let img = queue[0];
+      // if the slice directly above is still waiting and not far behind, do it first: a bubble cut by
+      // their seam can only be lettered across both slices when the upper one goes first
+      for (let up = upperNeighbour(img); up && queue.includes(up) && up.getBoundingClientRect().bottom > -innerHeight;
+           up = upperNeighbour(up)) img = up;
+      queue.splice(queue.indexOf(img), 1);
       await process(img);
       done++; setStatus();
     }
@@ -166,7 +183,7 @@
     const imgs = candidates();
     if (!imgs.length) return toast("这个页面没找到漫画图片");
     enqueue(imgs.filter((i) => nearViewport(i, 3)));
-    cfg.auto = true; // keep following as the reader scrolls / loads more pages
+    following = true; // keep following as the reader scrolls / loads more pages
   }
 
   function toggleOriginal() {
@@ -182,7 +199,7 @@
   // auto mode: translate pages as they approach the viewport
   let scrollT = null;
   function autoScan() {
-    if (!cfg.auto || showOriginal) return;
+    if (!(cfg.auto || following) || showOriginal) return;
     enqueue(candidates().filter((i) => nearViewport(i)));
   }
   addEventListener("scroll", () => { clearTimeout(scrollT); scrollT = setTimeout(autoScan, 250); }, { passive: true });
