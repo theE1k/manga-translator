@@ -3,6 +3,19 @@ import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def _load_dotenv(path: Path) -> None:
+    """KEY=VALUE lines from .env (kept out of git) -> environment, without overriding real env vars."""
+    if path.exists():
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+_load_dotenv(ROOT / ".env")
 MODELS = Path(os.environ.get("MT_MODELS", ROOT / "models"))
 FONTS = Path(os.environ.get("MT_FONTS", ROOT / "fonts"))
 CACHE = Path(os.environ.get("MT_CACHE", ROOT / ".cache"))
@@ -20,6 +33,14 @@ FONT_INDEX = int(os.environ.get("MT_FONT_INDEX", 0))  # face index inside a .ttc
 # Translation through a local Ollama server.
 OLLAMA_URL = os.environ.get("MT_OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.environ.get("MT_OLLAMA_MODEL", "qwen3:4b-instruct")
+
+# Cloud translation through any OpenAI-compatible API (OpenRouter by default). Used when a key is set;
+# detection / OCR / inpainting always stay local, only the recognised text is sent.
+API_URL = os.environ.get("MT_API_URL", "https://openrouter.ai/api/v1")
+API_KEY = os.environ.get("MT_API_KEY", "")
+API_MODEL = os.environ.get("MT_API_MODEL", "deepseek/deepseek-v4.1-flash")
+BACKEND = os.environ.get("MT_BACKEND", "api" if API_KEY else "ollama")
+MODEL = API_MODEL if BACKEND == "api" else OLLAMA_MODEL  # the model actually used for translation
 
 DET_SIZE = 1024
 DET_CONF = float(os.environ.get("MT_DET_CONF", 0.4))

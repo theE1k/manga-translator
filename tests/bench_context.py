@@ -33,7 +33,7 @@ want = {(s, t) for s, t, _ in refs}
 
 if strategy == "baseline":
     T.SRC_NOTES = {}
-tr = T.Translator(model=model)
+tr = T.Translator(model=model, backend="api" if "/" in model else "ollama")  # "vendor/model" = cloud API
 tr.translate_lines(["안녕"], "ko", "zh")  # warm-up
 
 slices = {}

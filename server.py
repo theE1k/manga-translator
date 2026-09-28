@@ -53,7 +53,7 @@ def _check(token: str | None):
 @app.get("/health")
 def health(x_mt_token: str | None = Header(default=None)):
     _check(x_mt_token)
-    return {"ok": True, "model": config.OLLAMA_MODEL}
+    return {"ok": True, "backend": config.BACKEND, "model": config.MODEL}
 
 
 @app.post("/translate")
@@ -63,7 +63,7 @@ def translate(image: UploadFile = File(...), src: str = Form("ja"), tgt: str = F
     data = image.file.read()
     if not data:
         raise HTTPException(400, "empty image")
-    key = hashlib.sha1(data + f"|{src}|{tgt}|{config.OLLAMA_MODEL}".encode()).hexdigest()
+    key = hashlib.sha1(data + f"|{src}|{tgt}|{config.MODEL}".encode()).hexdigest()
     cached = config.CACHE / f"{key}.jpg"
     if cached.exists():
         return Response(cached.read_bytes(), media_type="image/jpeg", headers={"X-MT-Cache": "hit"})
@@ -115,5 +115,5 @@ b.src=URL.createObjectURL(await r.blob());st.textContent=((Date.now()-t0)/1000).
 
 if __name__ == "__main__":
     port = int(os.environ.get("MT_PORT", 8765))
-    print(f"manga-translator on http://0.0.0.0:{port}  (translation model: {config.OLLAMA_MODEL})")
+    print(f"manga-translator on http://0.0.0.0:{port}  (translation: {config.BACKEND} {config.MODEL})")
     uvicorn.run(app, host="0.0.0.0", port=port)

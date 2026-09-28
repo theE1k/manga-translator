@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 source .venv/bin/activate
-if command -v ollama >/dev/null 2>&1 && ! curl -s http://127.0.0.1:11434/api/tags >/dev/null; then
+if ! grep -qs "^MT_API_KEY=." .env && command -v ollama >/dev/null 2>&1 && ! curl -s http://127.0.0.1:11434/api/tags >/dev/null; then  # local model only when no API key
   (ollama serve >/dev/null 2>&1 &)
   sleep 2
 fi

@@ -1,8 +1,9 @@
-.venv/
-models/
-fonts/
-.cache/
-__pycache__/
-safari/
-out/
 .DS_Store
+.cache/
+.env
+.venv/
+__pycache__/
+fonts/
+models/
+out/
+safari/

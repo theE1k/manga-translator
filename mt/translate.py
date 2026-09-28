@@ -1,4 +1,4 @@
-"""Translation with a local open-source LLM through Ollama.
+"""Translation with an LLM: a cloud OpenAI-compatible API (OpenRouter etc.) or a local model through Ollama.
 
 Whole page is sent at once (numbered, in reading order) so the model sees the
 conversation and keeps names / tone consistent.
@@ -14,6 +14,7 @@ Suggested models:
 from __future__ import annotations
 
 import json
+import os
 import re
 
 import requests
@@ -59,13 +60,20 @@ _HYMT_NAMES = {"zh": "中文", "zh-TW": "繁体中文", "en": "英语", "ja": "�
 
 
 class Translator:
-    def __init__(self, model=config.OLLAMA_MODEL, url=config.OLLAMA_URL, timeout=180):
-        self.model, self.url, self.timeout = model, url.rstrip("/"), timeout
+    def __init__(self, model=None, url=None, timeout=180, backend=None):
+        self.backend = backend or config.BACKEND
+        if self.backend == "api":
+            self.model, self.url = model or config.API_MODEL, (url or config.API_URL).rstrip("/")
+        else:
+            self.model, self.url = model or config.OLLAMA_MODEL, (url or config.OLLAMA_URL).rstrip("/")
+        self.timeout = timeout
         self.http = requests.Session()
         self.http.trust_env = False  # never send localhost traffic through a system proxy (Clash etc.)
 
     def _chat(self, system: str, user: str, json_mode: bool) -> str:
         msgs = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": user}]
+        if self.backend == "api":
+            return self._chat_api(msgs, json_mode)
         # HY-MT ships its own sampling defaults in the Modelfile; don't override them
         opts = {"num_ctx": 4096} if _is_hymt(self.model) else {"temperature": 0.2, "num_ctx": 4096}
         body = {"model": self.model, "stream": False, "options": opts, "messages": msgs}
@@ -76,6 +84,26 @@ class Translator:
         r = self.http.post(f"{self.url}/api/chat", json=body, timeout=self.timeout)
         r.raise_for_status()
         return r.json()["message"]["content"]
+
+    def _chat_api(self, msgs, json_mode: bool) -> str:
+        body = {"model": self.model, "messages": msgs, "temperature": 0.3}
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
+        if "openrouter.ai" in self.url:
+            # Route around first-party hosts that moderate adult content, and (unless the model is a
+            # free one, which requires it) around providers that keep or train on prompts.
+            prov = {"ignore": [p for p in os.environ.get("MT_API_IGNORE", "DeepSeek,Alibaba").split(",") if p]}
+            if not self.model.endswith(":free"):
+                prov["data_collection"] = "deny"
+            body["provider"] = prov
+        r = self.http.post(f"{self.url}/chat/completions", json=body, timeout=self.timeout,
+                           headers={"Authorization": f"Bearer {config.API_KEY}", "X-Title": "manga-translator"})
+        if r.status_code >= 400:
+            raise requests.HTTPError(f"{r.status_code}: {r.text[:300]}", response=r)
+        choice = r.json()["choices"][0]
+        if choice.get("finish_reason") == "content_filter":
+            raise requests.HTTPError("refused by content filter")
+        return choice["message"]["content"] or ""
 
     def translate_lines(self, lines: list[str], src: str, tgt: str,
                         history: list[tuple[str, str]] | None = None) -> list[str]:
