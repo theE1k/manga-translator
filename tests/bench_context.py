@@ -51,7 +51,9 @@ for sl in sorted(slices)[:limit]:
             got[f"{sl}|{a}"] = b
     history = history[-20:]
 dt = time.time() - t0
-name = f"{model.replace(':', '_')}__{strategy}"
+name = f"{model.replace('/', '_').replace(':', '_')}__{strategy}"
+if "/" in model:
+    name += "__think-" + __import__("os").environ.get("MT_API_REASONING", "off")
 Path("out/bench").mkdir(parents=True, exist_ok=True)
 Path(f"out/bench/{name}.json").write_text(json.dumps({"seconds": dt, "out": got}, ensure_ascii=False, indent=0))
 print(f"{name}: {len(got)}/{len(refs)} ref lines, {dt:.0f}s for {len(slices)} slices")

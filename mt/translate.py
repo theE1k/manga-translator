@@ -60,6 +60,22 @@ def _is_hymt(model: str) -> bool:
 _HYMT_NAMES = {"zh": "中文", "zh-TW": "繁体中文", "en": "英语", "ja": "日语", "ko": "韩语"}
 
 
+_MODEL_PARAMS: dict[str, set] = {}
+
+
+def _supports(url: str, model: str, param: str) -> bool:
+    """OpenRouter lists each model's supported request parameters; fetch once and cache."""
+    if "openrouter.ai" not in url:
+        return False
+    if not _MODEL_PARAMS:
+        try:
+            data = requests.get(f"{url}/models", timeout=30).json()["data"]
+            _MODEL_PARAMS.update({m["id"]: set(m.get("supported_parameters") or []) for m in data})
+        except (requests.RequestException, KeyError, ValueError):
+            return False
+    return param in _MODEL_PARAMS.get(model, set())
+
+
 class Translator:
     def __init__(self, model=None, url=None, timeout=180, backend=None):
         self.backend = backend or config.BACKEND
@@ -92,6 +108,10 @@ class Translator:
         body = {"model": self.model, "messages": msgs, "temperature": 0.3, "max_tokens": 1024}
         if json_mode:
             body["response_format"] = {"type": "json_object"}
+        if _supports(self.url, self.model, "reasoning"):
+            # Reasoning models (DeepSeek V4, GLM, Nemotron) think by default: ~30x the output tokens and
+            # 3x the latency for a bubble of dialogue. Off unless MT_API_REASONING=on.
+            body["reasoning"] = {"enabled": os.environ.get("MT_API_REASONING", "off") == "on"}
         if "openrouter.ai" in self.url:
             # Route around first-party hosts that moderate adult content, and (unless the model is a
             # free one, which requires it) around providers that keep or train on prompts.
