@@ -52,13 +52,34 @@
     });
   }
 
+  // Position in the page layout (CSS px). Summed offsetTop is stable even inside scrolling containers,
+  // so the server can order a chapter's slices and tell which ones touch.
+  function layoutTop(el) {
+    let y = 0;
+    for (let e = el; e; e = e.offsetParent) y += e.offsetTop;
+    return y;
+  }
+
+  // the next two loaded page images below `img` (look-ahead context + bubbles cut by the seam)
+  function nextImages(img, n = 2) {
+    const top = layoutTop(img);
+    return candidates()
+      .map((i) => [layoutTop(i), i])
+      .filter(([t, i]) => i !== img && t > top + 1)
+      .sort((a, b) => a[0] - b[0])
+      .slice(0, n)
+      .map(([t, i]) => ({ img: i, y: t }));
+  }
+
   function nearViewport(img, margin = 1.5) {
     const r = img.getBoundingClientRect(), vh = innerHeight;
     return r.bottom > -vh * 0.2 && r.top < vh * (1 + margin);
   }
 
   async function imageData(img) {
-    const src = img.currentSrc || img.src;
+    const st = state.get(img);
+    const src = st && st.orig && (img.currentSrc || img.src).startsWith("data:") ? st.orig : (img.currentSrc || img.src);
+    if (src !== (img.currentSrc || img.src)) return { url: src, referer: location.href };
     // 1) blob:/data:/same-origin or CORS-enabled: read directly from the page
     if (src.startsWith("data:")) return { dataUrl: src };
     try {
@@ -94,7 +115,14 @@
     img.classList.add("mt-working");
     try {
       const payload = await imageData(img);
-      const res = await api.runtime.sendMessage({ type: "translate", ...payload, src: cfg.src, tgt: cfg.tgt, ctx: location.origin + location.pathname + location.search });
+      const next = [];
+      for (const n of nextImages(img)) {
+        try { next.push({ ...(await imageData(n.img)), y: n.y }); } catch (_) { break; }
+      }
+      const res = await api.runtime.sendMessage({
+        type: "translate", ...payload, src: cfg.src, tgt: cfg.tgt,
+        ctx: location.origin + location.pathname + location.search, y: layoutTop(img), next,
+      });
       if (!res || res.error) throw new Error(res ? res.error : "no response from background");
       st.translated = res.dataUrl;
       st.status = "done";
@@ -112,8 +140,11 @@
     if (busy) return;
     busy = true; setStatus();
     while (queue.length) {
-      // closest-to-viewport first
-      queue.sort((a, b) => Math.abs(a.getBoundingClientRect().top) - Math.abs(b.getBoundingClientRect().top));
+      // reading order from the viewport down (a slice before the one below it, so a bubble cut by the
+      // seam can be lettered across both); slices already scrolled past go last
+      const vy = scrollY;
+      const key = (i) => { const r = i.getBoundingClientRect(); return (r.bottom < 0 ? 1e9 : 0) + r.top + vy; };
+      queue.sort((a, b) => key(a) - key(b));
       const img = queue.shift();
       await process(img);
       done++; setStatus();

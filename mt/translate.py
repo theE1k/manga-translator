@@ -133,7 +133,8 @@ class Translator:
         return choice["message"]["content"] or ""
 
     def translate_lines(self, lines: list[str], src: str, tgt: str,
-                        history: list[tuple[str, str]] | None = None) -> list[str]:
+                        history: list[tuple[str, str]] | None = None,
+                        ahead: list[str] | None = None) -> list[str]:
         if not lines:
             return []
         tgt_name = config.LANG_NAMES.get(tgt, tgt)
@@ -154,6 +155,9 @@ class Translator:
             if history:
                 ctx = ("Earlier lines of this chapter, already translated (context only, do not output them):\n"
                        + "\n".join(f"{a} => {b}" for a, b in history) + "\n\n")
+            if ahead:
+                ctx += ("Lines that come right after this page (context only, do not output them):\n"
+                        + "\n".join(ahead) + "\n\n")
             user = (ctx + f"Translate each {src_name} value into {tgt_name}. Reply with a JSON object "
                     f"with exactly the same keys and only the translations as values.\n"
                     + json.dumps(payload, ensure_ascii=False))
@@ -199,9 +203,9 @@ class Translator:
         return out
 
     def __call__(self, blocks: list[TextBlock], src: str, tgt: str,
-                 history: list[tuple[str, str]] | None = None) -> None:
+                 history: list[tuple[str, str]] | None = None, ahead: list[str] | None = None) -> None:
         todo = [b for b in blocks if b.text]
-        for b, t in zip(todo, self.translate_lines([b.text for b in todo], src, tgt, history)):
+        for b, t in zip(todo, self.translate_lines([b.text for b in todo], src, tgt, history, ahead)):
             b.translation = _clean(t)
 
 

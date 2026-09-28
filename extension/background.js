@@ -37,18 +37,27 @@ async function setReferer(pageUrl) {
   } catch (e) { console.warn("referer rule failed", e); }
 }
 
+async function toBlob(m) {
+  if (m.dataUrl) return b64ToBlob(m.dataUrl);
+  await setReferer(m.referer);
+  const r = await fetch(m.url, { credentials: "include" });
+  if (!r.ok) throw new Error(`image fetch ${r.status}`);
+  return r.blob();
+}
+
 async function translate(msg) {
   const cfg = Object.assign({}, DEFAULTS, await api.storage.local.get(Object.keys(DEFAULTS)));
-  let blob;
-  if (msg.dataUrl) blob = b64ToBlob(msg.dataUrl);
-  else {
-    await setReferer(msg.referer);
-    const r = await fetch(msg.url, { credentials: "include" });
-    if (!r.ok) throw new Error(`image fetch ${r.status}`);
-    blob = await r.blob();
-  }
+  const blob = await toBlob(msg);
   const fd = new FormData();
   fd.append("image", blob, "page");
+  if (msg.y != null) fd.append("y", String(msg.y));
+  // next slices: look-ahead context + bubbles cut by the seam. Optional - failures are ignored.
+  for (const [i, n] of (msg.next || []).entries()) {
+    try {
+      fd.append(`next${i + 1}`, await toBlob(n), "next");
+      if (i === 0 && n.y != null) fd.append("next1_y", String(n.y));
+    } catch (e) { console.warn("next slice skipped", e); break; }
+  }
   fd.append("src", msg.src || cfg.src);
   fd.append("tgt", msg.tgt || cfg.tgt);
   if (msg.ctx) fd.append("ctx", msg.ctx);  // chapter URL -> server keeps earlier lines as context

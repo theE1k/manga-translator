@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
 import threading
+import time
 from collections import OrderedDict
 
 import numpy as np
@@ -21,6 +23,8 @@ from fastapi.responses import HTMLResponse, Response
 from PIL import Image
 
 from mt import Pipeline, config
+from mt.chapter import ChapterStore
+from mt.pipeline import log_blocks
 
 app = FastAPI(title="manga-translator")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -30,19 +34,36 @@ lock = threading.Lock()  # models are not thread-safe; pages are processed one a
 TOKEN = os.environ.get("MT_TOKEN", "")
 config.CACHE.mkdir(parents=True, exist_ok=True)
 
-# Per-chapter translation memory: the extension sends the reading page URL as `ctx`, so each new
-# slice is translated knowing the dialogue before it (names, tone, running jokes stay consistent).
-HISTORY: OrderedDict[str, list[tuple[str, str]]] = OrderedDict()
-HISTORY_LINES, HISTORY_CHAPTERS = 20, 50
+chapters = ChapterStore()
+_read_cache: OrderedDict[str, list[str]] = OrderedDict()  # image sha1 -> OCR lines (look-ahead only)
 
 
-def _history(ctx: str) -> list[tuple[str, str]]:
-    if not ctx:
+def _decode(data: bytes | None):
+    if not data:
+        return None
+    try:
+        return np.asarray(Image.open(io.BytesIO(data)).convert("RGB"))
+    except Exception:
+        return None
+
+
+def _lines_of(data: bytes | None, src: str) -> list[str]:
+    """OCR text of a look-ahead slice (cached, never translated here)."""
+    rgb = _decode(data)
+    if rgb is None:
         return []
-    HISTORY.move_to_end(ctx) if ctx in HISTORY else HISTORY.setdefault(ctx, [])
-    while len(HISTORY) > HISTORY_CHAPTERS:
-        HISTORY.popitem(last=False)
-    return HISTORY[ctx]
+    h = hashlib.sha1(data).hexdigest()
+    if h not in _read_cache:
+        _read_cache[h] = [b.text for b in pipe.read(rgb, src) if b.text]
+        while len(_read_cache) > 64:
+            _read_cache.popitem(last=False)
+    return _read_cache[h]
+
+
+def _overlaps(b, box, frac=0.3) -> bool:
+    ix = max(0, min(b.x2, box[2]) - max(b.x1, box[0]))
+    iy = max(0, min(b.y2, box[3]) - max(b.y1, box[1]))
+    return ix * iy > frac * max(1, b.w * b.h)
 
 
 def _check(token: str | None):
@@ -58,14 +79,29 @@ def health(x_mt_token: str | None = Header(default=None)):
 
 @app.post("/translate")
 def translate(image: UploadFile = File(...), src: str = Form("ja"), tgt: str = Form("zh"),
-              ctx: str = Form(""), x_mt_token: str | None = Header(default=None)):
+              ctx: str = Form(""), y: float = Form(-1),
+              next1: UploadFile | None = File(None), next1_y: float = Form(-1),
+              next2: UploadFile | None = File(None),
+              x_mt_token: str | None = Header(default=None)):
+    """Translate one slice.
+
+    ctx/y: chapter (page URL) and the slice's vertical position -> earlier lines become context and
+    this slice's lines are remembered. next1/next2: the next two slices -> their text is given to the
+    model as look-ahead context, and a bubble cut by the seam to next1 is lettered across both slices.
+    """
     _check(x_mt_token)
     data = image.file.read()
     if not data:
         raise HTTPException(400, "empty image")
-    key = hashlib.sha1(data + f"|{src}|{tgt}|{config.MODEL}".encode()).hexdigest()
-    cached = config.CACHE / f"{key}.jpg"
+    n1 = next1.file.read() if next1 else None
+    n2 = next2.file.read() if next2 else None
+    h = hashlib.sha1(data).hexdigest()
+    n1h = hashlib.sha1(n1).hexdigest() if n1 else ""
+    key = hashlib.sha1(f"{h}|{n1h}|{src}|{tgt}|{config.MODEL}".encode()).hexdigest()
+    cached, meta = config.CACHE / f"{key}.jpg", config.CACHE / f"{key}.json"
     if cached.exists():
+        if meta.exists() and y >= 0:
+            chapters.record(ctx, y, json.loads(meta.read_text())["lines"])
         return Response(cached.read_bytes(), media_type="image/jpeg", headers={"X-MT-Cache": "hit"})
     try:
         im = Image.open(io.BytesIO(data))
@@ -77,19 +113,50 @@ def translate(image: UploadFile = File(...), src: str = Form("ja"), tgt: str = F
         raise HTTPException(400, "image too small")
 
     with lock:
-        hist = _history(ctx)
-        out, blocks, t = pipe.run(rgb, src, tgt, history=hist[-HISTORY_LINES:] or None)
-        hist.extend((b.text, b.translation) for b in blocks if b.text and b.translation)
-        del hist[:-HISTORY_LINES]
+        t0 = time.time()
+        # this slice may already carry the lower half of a bubble lettered together with the slice above
+        base, handled = chapters.get_carry(h)
+        if base is None or base.shape != rgb.shape:
+            base, handled = rgb, []
+        H = base.shape[0]
+        nxt = _decode(n1)
+        stitch = (nxt is not None and nxt.shape[1] == base.shape[1]
+                  and not (next1_y >= 0 and chapters.translated(ctx, next1_y)))
+        page = np.vstack([base, nxt]) if stitch else base
+
+        blocks = pipe.read(page, src)
+        mine = [b for b in blocks if b.y1 < H - 2 and not any(_overlaps(b, box) for box in handled)]
+        crossing = [b for b in mine if b.y2 > H + 2]
+        ahead = [b.text for b in blocks if b.y1 >= H - 2 and b.text]
+        if not stitch:
+            ahead = _lines_of(n1, src)
+        ahead += _lines_of(n2, src)
+        history = chapters.history(ctx, y) if y >= 0 else []
+        t = {"read": time.time() - t0}
+
+        out_page, t2 = pipe.finish(page, mine, src, tgt, history or None, ahead or None)
+        t.update(t2)
+        out = out_page[:H]
+        if stitch and crossing and n1h:
+            chapters.put_carry(n1h, out_page[H:], [(b.x1, b.y1 - H, b.x2, b.y2 - H) for b in crossing])
+        lines = [(b.text, b.translation) for b in mine if b.text]
+        if y >= 0:
+            chapters.record(ctx, y, lines)
+        log_blocks(mine, t)
+        if crossing:
+            print(f"  {len(crossing)} bubble(s) cut by the seam lettered across both slices")
+
     buf = io.BytesIO()
     if has_alpha:
         Image.fromarray(out).save(buf, "PNG")
         return Response(buf.getvalue(), media_type="image/png")
     Image.fromarray(out).save(buf, "JPEG", quality=93, subsampling=0)
     cached.write_bytes(buf.getvalue())
+    meta.write_text(json.dumps({"lines": lines}, ensure_ascii=False))
     return Response(buf.getvalue(), media_type="image/jpeg",
-                    headers={"X-MT-Blocks": str(len(blocks)),
-                             "X-MT-Time": f"{sum(t.values()):.1f}"})
+                    headers={"X-MT-Blocks": str(len(mine)), "X-MT-Time": f"{sum(t.values()):.1f}",
+                             "X-MT-Crossing": str(len(crossing)), "X-MT-History": str(len(history)),
+                             "X-MT-Ahead": str(len(ahead))})
 
 
 @app.get("/", response_class=HTMLResponse)

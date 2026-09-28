@@ -50,40 +50,49 @@ class Pipeline:
             self._inp = Inpainter()
         return self._inp
 
-    def run(self, rgb: np.ndarray, src: str = "ja", tgt: str = "zh", verbose=True,
-            history: list[tuple[str, str]] | None = None):
-        """history: earlier (source, translation) pairs of the same chapter, used as translation context."""
-        t = {}
-        t0 = time.time()
+    def read(self, rgb: np.ndarray, src: str = "ja") -> list[TextBlock]:
+        """detect -> analyse -> reading order -> OCR. Blocks keep page-sized glyph masks."""
         blocks, _ = self.detector.detect(rgb)
-        t["detect"] = time.time() - t0
         if not blocks:
-            return rgb, [], t
-
-        t0 = time.time()
+            return []
         analyze(rgb, blocks, src)
         blocks = reading_order(blocks, rtl=(src == "ja"))
-        t["analyze"] = time.time() - t0
-
-        t0 = time.time()
         self.ocr(rgb, blocks, src)
-        t["ocr"] = time.time() - t0
+        return blocks
 
+    def finish(self, rgb: np.ndarray, blocks: list[TextBlock], src: str, tgt: str,
+               history: list[tuple[str, str]] | None = None, ahead: list[str] | None = None):
+        """translate -> erase -> re-letter. history: earlier (source, translation) pairs of the chapter;
+        ahead: source lines that come right after this page (context only)."""
+        t = {}
         t0 = time.time()
-        self.translator(blocks, src, tgt, history)
+        self.translator(blocks, src, tgt, history, ahead)
         t["translate"] = time.time() - t0
-
         done = [b for b in blocks if b.translation]
         t0 = time.time()
         clean = self.inpainter(rgb, done)
         t["inpaint"] = time.time() - t0
-
         t0 = time.time()
         out = render(clean, done, tgt)
         t["typeset"] = time.time() - t0
+        return out, t
 
+    def run(self, rgb: np.ndarray, src: str = "ja", tgt: str = "zh", verbose=True,
+            history: list[tuple[str, str]] | None = None, ahead: list[str] | None = None):
+        """Whole page in one go (CLI / tests)."""
+        t0 = time.time()
+        blocks = self.read(rgb, src)
+        t = {"read": time.time() - t0}
+        if not blocks:
+            return rgb, [], t
+        out, t2 = self.finish(rgb, blocks, src, tgt, history, ahead)
+        t.update(t2)
         if verbose:
-            for b in blocks:
-                print(f"  [{b.x1},{b.y1} {'V' if b.vertical else 'H'} {b.font_px:.0f}px] {b.text!r} -> {b.translation!r}")
-            print("  timing: " + ", ".join(f"{k} {v:.2f}s" for k, v in t.items()))
+            log_blocks(blocks, t)
         return out, blocks, t
+
+
+def log_blocks(blocks, t):
+    for b in blocks:
+        print(f"  [{b.x1},{b.y1} {'V' if b.vertical else 'H'} {b.font_px:.0f}px] {b.text!r} -> {b.translation!r}")
+    print("  timing: " + ", ".join(f"{k} {v:.2f}s" for k, v in t.items()))
