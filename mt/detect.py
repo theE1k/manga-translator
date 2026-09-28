@@ -83,11 +83,45 @@ class TextDetector:
                 boxes.append([x1 + tx1, y1 + ty1, x2 + tx1, y2 + ty1, c])
         boxes = _dedupe(boxes)
         mask_bin = seg_full > config.MASK_THRESH
+        boxes = _augment_from_mask(boxes, mask_bin)
         blocks = [TextBlock(int(x1), int(y1), int(np.ceil(x2)), int(np.ceil(y2)), score=c)
                   for x1, y1, x2, y2, c in boxes]
         blocks = [b for b in blocks if b.w >= 6 and b.h >= 6]
         attach_masks(blocks, mask_bin)
         return blocks, seg_full
+
+
+def _augment_from_mask(boxes, mask_bin):
+    """The box head sometimes misses text the segmentation head clearly sees (captions on coloured
+    bars, text wider than its box). Join mask pixels into text lines; a line that overlaps a box
+    widens that box, a line that overlaps nothing becomes a new block. Blocks the OCR then reads as
+    empty are dropped later, so a stray blob never gets erased or lettered."""
+    h, w = mask_bin.shape
+    m = mask_bin.astype(np.uint8)
+    # glyph height from existing boxes decides how far to bridge gaps between letters
+    ref = np.median([min(b[2] - b[0], b[3] - b[1]) for b in boxes]) if boxes else 30
+    k = max(5, int(ref * 0.25))
+    lines = cv2.morphologyEx(m, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (k * 2, k // 2 + 1)))
+    n, _, stats, _ = cv2.connectedComponentsWithStats(lines, connectivity=8)
+    out = [list(b) for b in boxes]
+    for i in range(1, n):
+        x, y, bw, bh, area = stats[i]
+        if bh < 8 or bw < 12 or area < 120 or m[y:y + bh, x:x + bw].sum() < 60:
+            continue
+        cx1, cy1, cx2, cy2 = x, y, x + bw, y + bh
+        hit = None
+        for b in out:
+            ix = max(0, min(cx2, b[2]) - max(cx1, b[0]))
+            iy = max(0, min(cy2, b[3]) - max(cy1, b[1]))
+            if ix * iy > 0.3 * bw * bh:
+                hit = b
+                break
+        if hit is not None:
+            hit[0], hit[1] = min(hit[0], cx1), min(hit[1], cy1)
+            hit[2], hit[3] = max(hit[2], cx2), max(hit[3], cy2)
+        elif bh >= 10 and bw >= 2 * bh * 0.5:
+            out.append([max(0, cx1 - 2), max(0, cy1 - 2), min(w, cx2 + 2), min(h, cy2 + 2), 0.3])
+    return _dedupe(out)
 
 
 def attach_masks(blocks: list[TextBlock], mask_bin: np.ndarray) -> None:

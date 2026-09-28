@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import re
 import unicodedata
 from functools import lru_cache
 
@@ -63,18 +64,61 @@ def _is_cjk_text(s: str) -> bool:
 
 
 # ---------------------------------------------------------------- tokenising / wrapping
-def _tokens(text: str, cjk: bool) -> list[str]:
+# numbers / Latin words that must never be split across lines: 98.6%  1,196  2011.3.18  JBSN
+_UNBREAKABLE = re.compile(r"[0-9０-９A-Za-z][0-9０-９A-Za-z.,．，:：/%％\-]*[0-9０-９A-Za-z%％]|[0-9０-９A-Za-z]")
+_KANA = re.compile(r"[\u3040-\u30ff]")
+
+
+def _words(text: str) -> list[str]:
+    """Chinese text -> words (jieba) so lines break between words; other CJK -> characters.
+    Number/Latin runs are always kept whole."""
+    out = []
+    pos = 0
+    for m in _UNBREAKABLE.finditer(text):
+        out += _cjk_pieces(text[pos:m.start()])
+        out.append(m.group())
+        pos = m.end()
+    return out + _cjk_pieces(text[pos:])
+
+
+def _cjk_pieces(seg: str) -> list[str]:
+    if not seg:
+        return []
+    if _KANA.search(seg) is None:
+        try:
+            import jieba
+            jieba.setLogLevel(60)
+            return [w for w in jieba.lcut(seg, HMM=True) if w]
+        except ImportError:
+            pass
+    return list(seg)
+
+
+def _tokens(text: str, cjk: bool, words: bool = True) -> list[str]:
     if not cjk:
         return [w for w in text.split(" ") if w]
     toks = []
-    for ch in text:
-        if ch in NO_START and toks:
-            toks[-1] += ch  # punctuation sticks to the previous char
+    pieces = _words(text) if words else _chars_keep_runs(text)
+    for piece in pieces:
+        if piece[0] in NO_START and toks:
+            toks[-1] += piece  # punctuation sticks to the previous token
         elif toks and toks[-1] and toks[-1][-1] in NO_END:
-            toks[-1] += ch
-        else:
-            toks.append(ch)
+            toks[-1] += piece
+        elif toks and len(piece) == 1 and _UNBREAKABLE.fullmatch(toks[-1]) and _is_cjk_text(piece):
+            toks[-1] += piece  # keep a counter with its number: 2011年, 1196名
+        elif piece.strip():
+            toks.append(piece)
     return toks
+
+
+def _chars_keep_runs(text: str) -> list[str]:
+    """Per-character pieces, except number/Latin runs stay whole."""
+    out, pos = [], 0
+    for m in _UNBREAKABLE.finditer(text):
+        out += list(text[pos:m.start()])
+        out.append(m.group())
+        pos = m.end()
+    return out + list(text[pos:])
 
 
 def _phrases(tokens: list[str]) -> list[str]:
@@ -93,9 +137,13 @@ def _phrases(tokens: list[str]) -> list[str]:
 def _wrap(tokens, measure, limit, joiner):
     lines, cur = [], ""
     expanded = []
-    for t in tokens:  # a phrase longer than a whole line falls back to per-character breaking
+    for t in tokens:  # too long for a line: phrase -> words -> characters
         if not joiner and len(t) > 1 and measure(t) > limit:
-            expanded.extend(_tokens(t, True))
+            for wd in _tokens(t, True):
+                if len(wd) > 1 and measure(wd) > limit:
+                    expanded.extend(_tokens(wd, True, words=False))
+                else:
+                    expanded.append(wd)
         else:
             expanded.append(t)
     for t in expanded:
