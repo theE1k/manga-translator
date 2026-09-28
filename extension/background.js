@@ -1,6 +1,6 @@
 // Background: fetches page images (bypasses page CORS with host permission) and talks to the local server.
 const api = globalThis.browser ?? globalThis.chrome;
-const DEFAULTS = { server: "http://127.0.0.1:8765", token: "", src: "ja", tgt: "zh" };
+const DEFAULTS = { server: "http://127.0.0.1:8765", token: "", src: "ko", tgt: "zh" };
 
 function b64ToBlob(dataUrl) {
   const [head, b64] = dataUrl.split(",");

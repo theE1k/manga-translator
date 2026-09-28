@@ -3,7 +3,7 @@
   if (window.__mtLoaded) return;
   window.__mtLoaded = true;
   const api = globalThis.browser ?? globalThis.chrome;
-  const DEFAULTS = { src: "ja", tgt: "zh", auto: false, button: true, server: "http://127.0.0.1:8765", token: "" };
+  const DEFAULTS = { src: "ko", tgt: "zh", auto: false, button: true, server: "http://127.0.0.1:8765", token: "" };
   const MIN_SIDE = 300;          // ignore icons, avatars, ads
   let cfg = { ...DEFAULTS };
   let showOriginal = false;
