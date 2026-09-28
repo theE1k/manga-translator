@@ -7,4 +7,3 @@ fastapi>=0.110
 uvicorn>=0.29
 python-multipart
 manga-ocr>=0.1.14
-easyocr>=1.7

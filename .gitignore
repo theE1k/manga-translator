@@ -4,3 +4,4 @@ fonts/
 .cache/
 __pycache__/
 safari/
+out/

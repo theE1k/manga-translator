@@ -4,8 +4,8 @@ Whole page is sent at once (numbered, in reading order) so the model sees the
 conversation and keeps names / tone consistent.
 
 Suggested models:
-  qwen2.5:3b          default, ~2 GB, all language pairs
-  qwen2.5:7b          better quality, ~4.7 GB
+  qwen2.5:7b          default, ~4.7 GB, all language pairs
+  qwen2.5:3b          smaller/faster, ~2 GB
   sakura (SakuraLLM)  Japanese -> Chinese specialist (import GGUF into Ollama)
 """
 from __future__ import annotations

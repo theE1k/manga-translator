@@ -7,6 +7,9 @@ MODELS = Path(os.environ.get("MT_MODELS", ROOT / "models"))
 FONTS = Path(os.environ.get("MT_FONTS", ROOT / "fonts"))
 CACHE = Path(os.environ.get("MT_CACHE", ROOT / ".cache"))
 
+# Keep third-party model downloads inside the project (it lives on the external disk).
+os.environ.setdefault("EASYOCR_MODULE_PATH", str(CACHE / "easyocr"))
+
 DETECTOR_ONNX = MODELS / "comictextdetector.pt.onnx"
 LAMA_ONNX = MODELS / "lama_fp32.onnx"
 
@@ -16,7 +19,7 @@ FONT_INDEX = int(os.environ.get("MT_FONT_INDEX", 0))  # face index inside a .ttc
 
 # Translation through a local Ollama server.
 OLLAMA_URL = os.environ.get("MT_OLLAMA_URL", "http://127.0.0.1:11434")
-OLLAMA_MODEL = os.environ.get("MT_OLLAMA_MODEL", "qwen2.5:3b")
+OLLAMA_MODEL = os.environ.get("MT_OLLAMA_MODEL", "qwen2.5:7b")
 
 DET_SIZE = 1024
 DET_CONF = float(os.environ.get("MT_DET_CONF", 0.4))
