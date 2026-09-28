@@ -18,11 +18,31 @@ async function blobToDataUrl(blob) {
   return `data:${blob.type || "image/jpeg"};base64,${btoa(s)}`;
 }
 
+// Image hosts that check Referer (hotlink protection) reject requests from the extension, which
+// carry no page Referer. A session rule adds the reading page's URL to the extension's own requests.
+const REFERER_RULE = 1;
+async function setReferer(pageUrl) {
+  const dnr = api.declarativeNetRequest;
+  if (!dnr || !pageUrl) return;
+  try {
+    await dnr.updateSessionRules({
+      removeRuleIds: [REFERER_RULE],
+      addRules: [{
+        id: REFERER_RULE,
+        priority: 1,
+        action: { type: "modifyHeaders", requestHeaders: [{ header: "referer", operation: "set", value: pageUrl }] },
+        condition: { tabIds: [-1], resourceTypes: ["xmlhttprequest", "other", "image"] }
+      }]
+    });
+  } catch (e) { console.warn("referer rule failed", e); }
+}
+
 async function translate(msg) {
   const cfg = Object.assign({}, DEFAULTS, await api.storage.local.get(Object.keys(DEFAULTS)));
   let blob;
   if (msg.dataUrl) blob = b64ToBlob(msg.dataUrl);
   else {
+    await setReferer(msg.referer);
     const r = await fetch(msg.url, { credentials: "include" });
     if (!r.ok) throw new Error(`image fetch ${r.status}`);
     blob = await r.blob();

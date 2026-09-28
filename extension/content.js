@@ -73,7 +73,7 @@
       return { dataUrl: c.toDataURL("image/jpeg", 0.95) };
     } catch (_) { /* tainted */ }
     // 3) let the background fetch it with extension host permission
-    return { url: src };
+    return { url: src, referer: location.href };
   }
 
   function blobToDataUrl(blob) {
