@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # One-time setup on macOS (Apple Silicon). Usage:
-#   ./setup.sh            # Japanese source only
-#   ./setup.sh ja,ko,zh   # PaddleOCR models for ko/zh/en download on first use
+#   ./setup.sh            # Korean source (PaddleOCR)
+#   ./setup.sh ko,ja,zh   # add Japanese (manga-ocr) / Chinese OCR
+# With MT_API_KEY in .env (cloud translation) no local LLM is pulled.
 set -euo pipefail
 cd "$(dirname "$0")"
-LANGS="${1:-ja}"
+LANGS="${1:-ko}"
 MODEL="${MT_OLLAMA_MODEL:-qwen3:4b-instruct}"
 
 need_mb=2500                                   # Python packages ~1.5 GB + models ~0.8 GB
 have_model=0
-if command -v ollama >/dev/null 2>&1 && ollama list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$MODEL"; then
+if grep -qs "^MT_API_KEY=." .env; then
+  have_model=1  # translation goes through the API
+elif command -v ollama >/dev/null 2>&1 && ollama list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$MODEL"; then
   have_model=1
 else
   need_mb=$((need_mb + 2500))
@@ -38,7 +41,9 @@ $PIP -r requirements.txt
 
 python download_models.py "$LANGS"
 
-if [ "$have_model" = 1 ]; then
+if grep -qs "^MT_API_KEY=." .env; then
+  echo "✓ Cloud translation configured (.env); no local model needed"
+elif [ "$have_model" = 1 ]; then
   echo "✓ Ollama model $MODEL already installed"
 elif command -v ollama >/dev/null 2>&1; then
   echo "↓ Ollama model $MODEL"

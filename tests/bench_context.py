@@ -28,7 +28,10 @@ def guard(min_free_gb=10, max_swap_gb=8):
 lines_path, model, strategy = sys.argv[1], sys.argv[2], sys.argv[3]
 limit = int(sys.argv[4]) if len(sys.argv) > 4 else None  # only the first N slices (smoke test)
 rows = json.loads(Path(lines_path).read_text())
-refs = json.loads((Path(__file__).parent / "data/ko_zh_webtoon_ref.json").read_text())
+# Reference translations: [[slice, source_line, reference], ...]. Not shipped (the source lines are
+# copyrighted comic dialogue) - build your own set from a chapter you own and point MT_BENCH_REFS at it.
+refs = json.loads(Path(__import__("os").environ.get(
+    "MT_BENCH_REFS", Path(__file__).parent / "data/ko_zh_webtoon_ref.json")).read_text())
 want = {(s, t) for s, t, _ in refs}
 
 if strategy == "baseline":

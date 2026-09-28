@@ -205,11 +205,15 @@ class Translator:
 
     def __call__(self, blocks: list[TextBlock], src: str, tgt: str,
                  history: list[tuple[str, str]] | None = None, ahead: list[str] | None = None) -> None:
-        todo = [b for b in blocks if b.text]
+        # only blocks with actual words: a bubble tail or a stray mark read as "↑" / "+" must not be
+        # erased and redrawn
+        todo = [b for b in blocks if any(c.isalpha() for c in b.text)]
         for b, t in zip(todo, self.translate_lines([b.text for b in todo], src, tgt, history, ahead)):
             t = _clean(t)
             if tgt.startswith("zh") and src != "ja" and re.search(r"[\u3040-\u30ff]", t):
                 t = ""  # answered in Japanese (happens on logos / watermarks): leave the original
+            if "".join(t.split()) == "".join(b.text.split()):
+                t = ""  # unchanged (logos, names in Latin letters): keep the original pixels
             b.translation = t
 
 
